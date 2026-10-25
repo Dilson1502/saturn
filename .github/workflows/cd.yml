@@ -1,0 +1,54 @@
+name: CD
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: railway-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate prod secrets and variables
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - name: Check required values exist
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+          RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE }}
+        shell: bash
+        run: |
+          missing=0
+          for name in RAILWAY_TOKEN RAILWAY_PROJECT_ID RAILWAY_SERVICE; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is missing or empty in the 'prod' environment (Settings > Environments > prod)."
+              missing=1
+            fi
+          done
+          exit $missing
+
+  ci:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy
+    needs: [validate, ci]
+    environment: prod
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+      RAILWAY_SERVICE: ${{ vars.RAILWAY_SERVICE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Deploy
+        run: railway up --ci --project "$RAILWAY_PROJECT_ID" --service "$RAILWAY_SERVICE"
