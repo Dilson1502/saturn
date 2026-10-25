@@ -1,17 +1,9 @@
-# syntax=docker/dockerfile:1.7
 FROM rust:1.88-slim-bookworm AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN --mount=type=secret,id=proxy_ca,required=false \
-	if [ -f /run/secrets/proxy_ca ]; then \
-		install -m 0644 /run/secrets/proxy_ca /usr/local/share/ca-certificates/proxy-ca.crt \
-		&& update-ca-certificates \
-		&& CARGO_HTTP_CAINFO=/run/secrets/proxy_ca cargo build --locked --release --bin main; \
-	else \
-		cargo build --locked --release --bin main; \
-	fi
+RUN cargo build --locked --release --bin main
 
 FROM debian:bookworm-slim
 
