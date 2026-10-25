@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f6f4">
+  <title>Moving | Nearby earthquakes</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #19313a;
+      --muted: #68777b;
+      --paper: #f4f6f4;
+      --white: #fff;
+      --line: #e0e7e4;
+      --accent: #dc513d;
+      --accent-dark: #b83d2d;
+      --sea: #167c82;
+      --map-bg: #d9e8e5;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "DM Sans", sans-serif;
+    }
+
+    button, select { font: inherit; }
+
+    .topbar {
+      height: 68px;
+      flex: 0 0 68px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      border-bottom: 1px solid var(--line);
+      background: var(--white);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      font: 700 19px "Space Grotesk", sans-serif;
+    }
+
+    .brand-mark {
+      width: 27px;
+      height: 27px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: var(--ink);
+    }
+
+    .brand-mark svg { width: 17px; height: 17px; }
+
+    .topbar-note {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #338c68;
+      box-shadow: 0 0 0 3px #338c681c;
+    }
+
+    .layout {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 370px;
+    }
+
+    .map-panel {
+      min-width: 0;
+      min-height: 0;
+      position: relative;
+      background: var(--map-bg);
+    }
+
+    #map { position: absolute; inset: 0; }
+
+    .map-label {
+      position: absolute;
+      z-index: 500;
+      top: 18px;
+      left: 18px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border: 1px solid #ffffffb8;
+      border-radius: 5px;
+      background: #ffffffed;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 600;
+      box-shadow: 0 2px 10px #19313a12;
+    }
+
+    .map-label-mark {
+      width: 9px;
+      height: 9px;
+      border: 2px solid white;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent);
+    }
+
+    .sidebar {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid var(--line);
+      background: var(--white);
+    }
+
+    .sidebar-head { padding: 27px 24px 19px; }
+
+    .eyebrow {
+      margin: 0 0 9px;
+      color: var(--sea);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font: 600 26px/1.12 "Space Grotesk", sans-serif;
+    }
+
+    .subtitle {
+      margin: 9px 0 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: end;
+      gap: 9px;
+    }
+
+    .date-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px;
+      margin-top: 13px;
+    }
+
+    .date-controls label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    input[type="date"] {
+      width: 100%;
+      height: 38px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--white);
+      color: var(--ink);
+      font: 12px "DM Sans", sans-serif;
+    }
+
+    .count-field label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    select {
+      width: 100%;
+      height: 42px;
+      padding: 0 32px 0 11px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--white);
+      color: var(--ink);
+    }
+
+    .locate-button {
+      height: 42px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 13px;
+      border: 0;
+      border-radius: 4px;
+      background: var(--accent);
+      color: white;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .locate-button:hover { background: var(--accent-dark); }
+    .locate-button:disabled { cursor: wait; opacity: 0.7; }
+    .locate-button svg { width: 15px; height: 15px; }
+
+    .status {
+      min-height: 43px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0 24px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .status[data-state="error"] { color: #a7362a; }
+
+    .distance-filter {
+      padding: 13px 24px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .distance-heading, .range-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .distance-heading h2 {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .range-label {
+      color: var(--muted);
+      font-size: 10px;
+    }
+
+    .distance-bars {
+      height: 40px;
+      display: flex;
+      align-items: end;
+      gap: 3px;
+      margin: 10px 0 8px;
+    }
+
+    .distance-bar {
+      flex: 1;
+      min-width: 2px;
+      height: 4%;
+      border-radius: 2px 2px 0 0;
+      background: var(--sea);
+    }
+
+    .distance-bar[data-active="false"] { background: #dce5e2; }
+
+    .range-control + .range-control { margin-top: 8px; }
+
+    .range-control input {
+      width: 100%;
+      height: 15px;
+      display: block;
+      margin: 4px 0 0;
+      accent-color: var(--sea);
+      cursor: pointer;
+    }
+
+    .range-control input:disabled { cursor: not-allowed; opacity: 0.45; }
+
+    .status-icon {
+      flex: 0 0 7px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #9ca9a7;
+    }
+
+    .status[data-state="loading"] .status-icon {
+      background: var(--sea);
+      animation: pulse 1s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulse { to { opacity: 0.35; } }
+
+    .results-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px 10px;
+    }
+
+    .results-head h2 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    #result-count {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .results {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 0 12px 16px;
+    }
+
+    .empty-state {
+      padding: 13px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .quake-row {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 10px;
+      padding: 12px;
+      border: 0;
+      border-top: 1px solid var(--line);
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .quake-row:hover, .quake-row:focus-visible { background: #f4f7f6; }
+
+    .quake-index {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: #fce8e3;
+      color: var(--accent-dark);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .quake-title {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    .quake-distance {
+      padding-top: 2px;
+      color: var(--sea);
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .leaflet-container { font-family: "DM Sans", sans-serif; }
+    .leaflet-control-attribution { font-size: 10px !important; }
+
+    @media (max-width: 760px) {
+      html, body { height: auto; min-height: 100%; }
+      .topbar { height: 58px; flex-basis: 58px; padding: 0 17px; }
+      .topbar-note { font-size: 11px; }
+      .layout { flex: initial; display: flex; flex-direction: column; }
+      .map-panel { order: 0; height: 43vh; min-height: 290px; }
+      .sidebar { order: 1; border-left: 0; }
+      .sidebar-head { padding: 20px 18px 15px; }
+      h1 { font-size: 24px; }
+      .subtitle { margin-bottom: 15px; }
+      .controls { grid-template-columns: minmax(0, 1fr) auto; }
+      .status { margin: 0 18px; }
+      .results-head { padding: 14px 18px 8px; }
+      .results { flex: initial; max-height: none; padding: 0 7px 10px; }
+      .map-label { top: 12px; left: 12px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12h4l2.2-6 4.1 12 2.2-6H21" />
+        </svg>
+      </span>
+      <span>MOVING</span>
+    </div>
+    <div class="topbar-note"><span class="live-dot"></span>USGS earthquake feed</div>
+  </header>
+
+  <main class="layout">
+    <section class="map-panel" aria-label="Earthquake map">
+      <div id="map" role="application" aria-label="Map showing your location and nearby earthquakes"></div>
+      <div class="map-label"><span class="map-label-mark"></span>NEARBY ACTIVITY</div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <p class="eyebrow">LOCAL SEISMIC ACTIVITY</p>
+        <h1>Earthquakes<br>near you</h1>
+        <p class="subtitle">Recent events, ordered by distance.</p>
+        <div class="controls">
+          <div class="count-field">
+            <label for="count">Nearest events</label>
+            <select id="count" aria-label="Number of earthquakes">
+              <option value="5">5 events</option>
+              <option value="10" selected>10 events</option>
+              <option value="20">20 events</option>
+              <option value="50">50 events</option>
+            </select>
+          </div>
+          <button class="locate-button" id="locate" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="2" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2" />
+            </svg>
+            <span>Locate me</span>
+          </button>
+        </div>
+        <div class="date-controls">
+          <div>
+            <label for="start-date">From</label>
+            <input id="start-date" type="date" aria-label="Start date">
+          </div>
+          <div>
+            <label for="end-date">To</label>
+            <input id="end-date" type="date" aria-label="End date">
+          </div>
+        </div>
+      </div>
+
+      <div class="status" id="status" role="status" aria-live="polite">
+        <span class="status-icon" aria-hidden="true"></span>
+        <span id="status-text">Location access is needed to find nearby events.</span>
+      </div>
+
+      <section class="distance-filter" aria-label="Filter earthquakes by distance">
+        <div class="distance-heading">
+          <h2>Distance range</h2>
+          <span class="range-label" id="distance-summary">All distances</span>
+        </div>
+        <div class="distance-bars" id="distance-bars" aria-hidden="true"></div>
+        <div class="range-control">
+          <div class="range-label"><label for="distance-min">From</label><output id="distance-min-value">0 km</output></div>
+          <input id="distance-min" type="range" min="0" max="1" value="0" aria-label="Minimum distance in kilometers" disabled>
+        </div>
+        <div class="range-control">
+          <div class="range-label"><label for="distance-max">To</label><output id="distance-max-value">0 km</output></div>
+          <input id="distance-max" type="range" min="0" max="1" value="1" aria-label="Maximum distance in kilometers" disabled>
+        </div>
+      </section>
+
+      <div class="results-head">
+        <h2>Closest earthquakes</h2>
+        <span id="result-count">Not loaded</span>
+      </div>
+      <div class="results" id="results" aria-live="polite">
+        <div class="empty-state">Nearby events will appear here.</div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script>
+    const map = L.map("map", { zoomControl: false }).setView([20, 0], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    }).addTo(map);
+    L.control.zoom({ position: "bottomright" }).addTo(map);
+
+    const locateButton = document.getElementById("locate");
+    const countSelect = document.getElementById("count");
+    const status = document.getElementById("status");
+    const statusText = document.getElementById("status-text");
+    const resultCount = document.getElementById("result-count");
+    const results = document.getElementById("results");
+    const startDateInput = document.getElementById("start-date");
+    const endDateInput = document.getElementById("end-date");
+    const distanceBars = document.getElementById("distance-bars");
+    const distanceMin = document.getElementById("distance-min");
+    const distanceMax = document.getElementById("distance-max");
+    const distanceMinValue = document.getElementById("distance-min-value");
+    const distanceMaxValue = document.getElementById("distance-max-value");
+    const distanceSummary = document.getElementById("distance-summary");
+    const earthquakeLayer = L.layerGroup().addTo(map);
+    const userLayer = L.layerGroup().addTo(map);
+    let userPosition = null;
+    let allLocations = [];
+
+    const today = new Date();
+    const latestDate = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    const earliestDate = new Date(latestDate);
+    earliestDate.setUTCDate(earliestDate.getUTCDate() - 29);
+    const toDateValue = (date) => date.toISOString().slice(0, 10);
+    const earliestDateValue = toDateValue(earliestDate);
+    const latestDateValue = toDateValue(latestDate);
+    startDateInput.min = earliestDateValue;
+    startDateInput.max = latestDateValue;
+    endDateInput.min = earliestDateValue;
+    endDateInput.max = latestDateValue;
+    startDateInput.value = earliestDateValue;
+    endDateInput.value = latestDateValue;
+
+    function setStatus(message, state = "") {
+      statusText.textContent = message;
+      status.dataset.state = state;
+    }
+
+    function showEmpty(message) {
+      results.replaceChildren();
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = message;
+      results.append(empty);
+    }
+
+    function focusEarthquake(location) {
+      map.flyTo([location.latitude, location.longitude], Math.max(map.getZoom(), 7), {
+        duration: 0.55,
+      });
+      location.marker.openPopup();
+    }
+
+    function renderDistanceHistogram() {
+      const bucketCount = 18;
+      const counts = Array(bucketCount).fill(0);
+      const maximum = Math.max(1, Number(distanceMax.max));
+      const selectedMin = Number(distanceMin.value);
+      const selectedMax = Number(distanceMax.value);
+
+      allLocations.forEach((location) => {
+        const bucket = Math.min(bucketCount - 1, Math.floor(location.distance_km / maximum * bucketCount));
+        counts[bucket] += 1;
+      });
+
+      const peak = Math.max(1, ...counts);
+      distanceBars.replaceChildren(...counts.map((count, index) => {
+        const bar = document.createElement("span");
+        const lowerBound = index * maximum / bucketCount;
+        const upperBound = (index + 1) * maximum / bucketCount;
+        bar.className = "distance-bar";
+        bar.style.height = `${Math.max(4, count / peak * 100)}%`;
+        bar.dataset.active = String(upperBound >= selectedMin && lowerBound <= selectedMax);
+        return bar;
+      }));
+    }
+
+    function renderEarthquakes(locations) {
+      allLocations = locations;
+      const maximum = Math.max(1, ...locations.map((location) => location.distance_km));
+      distanceMin.max = maximum;
+      distanceMax.max = maximum;
+      distanceMin.value = 0;
+      distanceMax.value = maximum;
+      distanceMin.disabled = locations.length === 0;
+      distanceMax.disabled = locations.length === 0;
+      renderFilteredEarthquakes();
+    }
+
+    function renderFilteredEarthquakes() {
+      const minimum = Number(distanceMin.value);
+      const maximum = Number(distanceMax.value);
+      const locations = allLocations.filter((location) =>
+        location.distance_km >= minimum && location.distance_km <= maximum,
+      );
+
+      distanceMinValue.value = `${minimum} km`;
+      distanceMaxValue.value = `${maximum} km`;
+      distanceSummary.textContent = locations.length === 0
+        ? "No events"
+        : minimum === 0 && maximum === Number(distanceMax.max)
+          ? "All distances"
+          : `${minimum}–${maximum} km`;
+      renderDistanceHistogram();
+      map.closePopup();
+      earthquakeLayer.clearLayers();
+      results.replaceChildren();
+
+      const bounds = L.latLngBounds([[userPosition.latitude, userPosition.longitude]]);
+      userLayer.clearLayers();
+      locations.forEach((location, index) => {
+        if (!Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) return;
+
+        const marker = L.circleMarker([location.latitude, location.longitude], {
+          radius: Math.max(6, 10 - index * 0.12),
+          color: "#fff",
+          weight: 2,
+          fillColor: "#dc513d",
+          fillOpacity: 0.92,
+        }).addTo(earthquakeLayer);
+        location.marker = marker;
+
+        const popup = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = location.title;
+        const distance = document.createElement("div");
+        distance.textContent = `${Number(location.distance_km).toLocaleString()} km away`;
+        popup.append(title, distance);
+        marker.bindPopup(popup);
+        bounds.extend([location.latitude, location.longitude]);
+
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "quake-row";
+        row.setAttribute("aria-label", `${location.title}, ${location.distance_km} kilometers away`);
+
+        const number = document.createElement("span");
+        number.className = "quake-index";
+        number.textContent = String(index + 1).padStart(2, "0");
+        const name = document.createElement("span");
+        name.className = "quake-title";
+        name.textContent = location.title;
+        const distanceLabel = document.createElement("span");
+        distanceLabel.className = "quake-distance";
+        distanceLabel.textContent = `${Number(location.distance_km).toLocaleString()} km`;
+        row.append(number, name, distanceLabel);
+        row.addEventListener("click", () => focusEarthquake(location));
+        results.append(row);
+      });
+
+      const userMarker = L.circleMarker([userPosition.latitude, userPosition.longitude], {
+        radius: 8,
+        color: "#fff",
+        weight: 3,
+        fillColor: "#167c82",
+        fillOpacity: 1,
+      }).addTo(userLayer);
+      userMarker.bindPopup("Your location");
+      bounds.extend([userPosition.latitude, userPosition.longitude]);
+      if (locations.length > 0) {
+        map.fitBounds(bounds, { padding: [36, 36], maxZoom: 9 });
+      } else {
+        map.setView([userPosition.latitude, userPosition.longitude], 8);
+      }
+
+      resultCount.textContent = `${locations.length} of ${allLocations.length} shown`;
+      if (locations.length === 0) showEmpty("No nearby earthquakes were found in the current feed.");
+    }
+
+    async function loadNearby(latitude, longitude) {
+      locateButton.disabled = true;
+      setStatus("Loading nearby earthquakes…", "loading");
+      try {
+        const params = new URLSearchParams({
+          lat: latitude,
+          lon: longitude,
+          num_earthquakes: countSelect.value,
+          start_date: startDateInput.value,
+          end_date: endDateInput.value,
+        });
+        const response = await fetch(`/earthquakes/near-me?${params}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Could not load earthquake data.");
+
+        renderEarthquakes(data.locations || []);
+        setStatus(`Showing the closest events to ${latitude.toFixed(2)}, ${longitude.toFixed(2)}.`, "success");
+      } catch (error) {
+        resultCount.textContent = "Unavailable";
+        showEmpty(error.message || "Could not load earthquake data.");
+        setStatus(error.message || "Could not load earthquake data.", "error");
+      } finally {
+        locateButton.disabled = false;
+      }
+    }
+
+    function locateUser() {
+      if (!navigator.geolocation) {
+        setStatus("Location is not available in this browser.", "error");
+        return;
+      }
+
+      locateButton.disabled = true;
+      setStatus("Finding your location…", "loading");
+      navigator.geolocation.getCurrentPosition(
+        ({ coords }) => {
+          userPosition = { latitude: coords.latitude, longitude: coords.longitude };
+          userLayer.clearLayers();
+          loadNearby(userPosition.latitude, userPosition.longitude);
+        },
+        (error) => {
+          locateButton.disabled = false;
+          const message = error.code === error.PERMISSION_DENIED
+            ? "Location permission was denied. Allow it in your browser settings to continue."
+            : error.code === error.TIMEOUT
+              ? "Location lookup timed out. Try again."
+              : "Could not determine your location. Try again.";
+          setStatus(message, "error");
+        },
+        { enableHighAccuracy: false, timeout: 12000, maximumAge: 60000 },
+      );
+    }
+
+    locateButton.addEventListener("click", locateUser);
+    countSelect.addEventListener("change", () => {
+      if (userPosition) loadNearby(userPosition.latitude, userPosition.longitude);
+    });
+    distanceMin.addEventListener("input", () => {
+      if (Number(distanceMin.value) > Number(distanceMax.value)) {
+        distanceMax.value = distanceMin.value;
+      }
+      renderFilteredEarthquakes();
+    });
+    distanceMax.addEventListener("input", () => {
+      if (Number(distanceMax.value) < Number(distanceMin.value)) {
+        distanceMin.value = distanceMax.value;
+      }
+      renderFilteredEarthquakes();
+    });
+
+    function updateDateRange(changedInput) {
+      if (startDateInput.value > endDateInput.value) {
+        if (changedInput === startDateInput) {
+          endDateInput.value = startDateInput.value;
+        } else {
+          startDateInput.value = endDateInput.value;
+        }
+      }
+      startDateInput.max = endDateInput.value;
+      endDateInput.min = startDateInput.value;
+      if (userPosition) loadNearby(userPosition.latitude, userPosition.longitude);
+    }
+
+    startDateInput.addEventListener("change", () => updateDateRange(startDateInput));
+    endDateInput.addEventListener("change", () => updateDateRange(endDateInput));
+    locateUser();
+  </script>
+</body>
+</html>
