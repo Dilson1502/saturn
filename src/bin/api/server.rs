@@ -1,4 +1,4 @@
-use std::{env, time::Duration};
+use std::{env, sync::Arc, time::Duration};
 
 use axum::http::Method;
 use dotenvy::dotenv;
@@ -7,7 +7,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use super::{
     AppState,
-    constants::{DEFAULT_PORT, HTTP_TIMEOUT_SECONDS},
+    constants::{DEFAULT_PORT, FEED_CACHE_TTL_SECONDS, HTTP_TIMEOUT_SECONDS},
+    io::FeedCache,
     routes::build_router,
 };
 
@@ -31,7 +32,11 @@ pub(super) async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => DEFAULT_PORT,
     };
     let address = format!("0.0.0.0:{port}");
-    let state = AppState { client, api_url };
+    let state = AppState {
+        client,
+        api_url,
+        feed_cache: Arc::new(FeedCache::new(Duration::from_secs(FEED_CACHE_TTL_SECONDS))),
+    };
 
     let cors = CorsLayer::new()
         .allow_origin(Any)

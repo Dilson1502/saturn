@@ -12,7 +12,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use super::{
     AppState,
-    io::fetch_earthquake_features,
+    io::fetch_cached_earthquake_features,
     models::{ApiError, EarthquakesResponse, NearestEarthquakesQuery},
     transformations::{filter_earthquake_features, find_nearest_earthquakes},
 };
@@ -174,10 +174,11 @@ async fn get_nearest_earthquakes(
     let date_window = parse_date_window(query.start_date.as_deref(), query.end_date.as_deref())
         .map_err(|message| (StatusCode::BAD_REQUEST, Json(ApiError { error: message })))?;
 
-    let features = fetch_earthquake_features(&state.client, &state.api_url)
-        .await
-        .map_err(|message| (StatusCode::BAD_GATEWAY, Json(ApiError { error: message })))?;
-    let earthquakes = filter_earthquake_features(features, date_window);
+    let features =
+        fetch_cached_earthquake_features(&state.client, &state.api_url, &state.feed_cache)
+            .await
+            .map_err(|message| (StatusCode::BAD_GATEWAY, Json(ApiError { error: message })))?;
+    let earthquakes = filter_earthquake_features(&features, date_window);
 
     let locations =
         find_nearest_earthquakes(&earthquakes, query.lat, query.lon, query.num_earthquakes);
@@ -228,4 +229,185 @@ fn parse_date_window(
         .timestamp_millis();
 
     Ok(Some((start_time, end_time)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use reqwest::Client;
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::api::io::FeedCache;
+
+    /// Serves `router` on an ephemeral local port and returns its base URL.
+    async fn spawn(router: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        format!("http://{address}")
+    }
+
+    /// Starts a fake USGS feed that counts how often it is requested.
+    async fn spawn_feed(status: StatusCode) -> (String, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let feed = json!({
+            "features": [
+                {
+                    "id": "nyc",
+                    "properties": { "title": "M 2.0 - New York", "time": 1_700_000_000_000_i64 },
+                    "geometry": { "coordinates": [-74.0060, 40.7128, 5.0] }
+                },
+                {
+                    "id": "lisbon",
+                    "properties": { "title": "M 3.0 - Lisbon", "time": 1_700_000_000_000_i64 },
+                    "geometry": { "coordinates": [-9.1393, 38.7223, 5.0] }
+                },
+                {
+                    "id": "tokyo",
+                    "properties": { "title": "M 4.0 - Tokyo", "time": 1_700_000_000_000_i64 },
+                    "geometry": { "coordinates": [139.6503, 35.6762, 5.0] }
+                }
+            ]
+        });
+        let router = Router::new().route(
+            "/feed",
+            get(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let feed = feed.clone();
+                async move { (status, Json(feed)) }
+            }),
+        );
+        (format!("{}/feed", spawn(router).await), hits)
+    }
+
+    async fn spawn_api(api_url: String, cache_ttl: Duration) -> String {
+        spawn(build_router(AppState {
+            client: Client::new(),
+            api_url,
+            feed_cache: Arc::new(FeedCache::new(cache_ttl)),
+        }))
+        .await
+    }
+
+    async fn get_json(url: String) -> (StatusCode, Value) {
+        let response = reqwest::get(url).await.unwrap();
+        let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
+        (status, response.json().await.unwrap())
+    }
+
+    fn titles(body: &Value) -> Vec<&str> {
+        body["locations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|location| location["title"].as_str().unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn results_follow_the_requested_location_and_reuse_the_feed() {
+        let (feed_url, hits) = spawn_feed(StatusCode::OK).await;
+        let api = spawn_api(feed_url, Duration::from_secs(60)).await;
+
+        let (status, from_new_york) = get_json(format!(
+            "{api}/earthquakes/near-me?lat=40.7128&lon=-74.0060"
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            titles(&from_new_york),
+            ["M 2.0 - New York", "M 3.0 - Lisbon", "M 4.0 - Tokyo"]
+        );
+        assert_eq!(from_new_york["locations"][0]["distance_km"], 0);
+        assert_eq!(from_new_york["earthquakes"]["M 2.0 - New York"], 0.0);
+
+        let (status, from_tokyo) = get_json(format!(
+            "{api}/earthquakes/near-me?lat=35.6762&lon=139.6503&num_earthquakes=2"
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(titles(&from_tokyo), ["M 4.0 - Tokyo", "M 2.0 - New York"]);
+
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "feed should be cached");
+    }
+
+    #[tokio::test]
+    async fn expired_feed_is_fetched_again() {
+        let (feed_url, hits) = spawn_feed(StatusCode::OK).await;
+        let api = spawn_api(feed_url, Duration::ZERO).await;
+
+        for _ in 0..2 {
+            let (status, _) = get_json(format!("{api}/earthquakes/near-me?lat=0&lon=0")).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn date_filters_still_apply() {
+        let (feed_url, _) = spawn_feed(StatusCode::OK).await;
+        let api = spawn_api(feed_url, Duration::from_secs(60)).await;
+
+        let (status, body) = get_json(format!(
+            "{api}/earthquakes/near-me?lat=0&lon=0&start_date=2020-01-01&end_date=2020-01-02"
+        ))
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(titles(&body).is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_coordinates_are_rejected_without_calling_the_feed() {
+        let (feed_url, hits) = spawn_feed(StatusCode::OK).await;
+        let api = spawn_api(feed_url, Duration::from_secs(60)).await;
+
+        for query in [
+            "lat=91&lon=0",
+            "lat=-90.5&lon=0",
+            "lat=0&lon=180.1",
+            "lat=0&lon=0&num_earthquakes=0",
+        ] {
+            let (status, body) = get_json(format!("{api}/earthquakes/near-me?{query}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}");
+            assert!(body["error"].is_string(), "{query}");
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn provider_failures_return_bad_gateway_and_are_not_cached() {
+        let (feed_url, hits) = spawn_feed(StatusCode::INTERNAL_SERVER_ERROR).await;
+        let api = spawn_api(feed_url, Duration::from_secs(60)).await;
+
+        for _ in 0..2 {
+            let (status, body) = get_json(format!("{api}/earthquakes/near-me?lat=0&lon=0")).await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert_eq!(
+                body["error"],
+                "The earthquake data provider returned an error."
+            );
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn date_window_is_inclusive_of_the_end_day() {
+        assert_eq!(parse_date_window(None, None), Ok(None));
+        assert_eq!(
+            parse_date_window(Some("2024-01-01"), Some("2024-01-01")),
+            Ok(Some((1_704_067_200_000, 1_704_153_600_000)))
+        );
+        assert!(parse_date_window(Some("2024-01-02"), Some("2024-01-01")).is_err());
+        assert!(parse_date_window(Some("2024-01-01"), None).is_err());
+        assert!(parse_date_window(Some("01/01/2024"), Some("2024-01-02")).is_err());
+    }
 }

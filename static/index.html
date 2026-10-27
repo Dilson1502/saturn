@@ -387,6 +387,48 @@
       white-space: nowrap;
     }
 
+    .results[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s; }
+
+    .selection-marker { cursor: grab; }
+
+    .selection-marker-dot {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border: 3px solid #fff;
+      border-radius: 50%;
+      background: var(--sea);
+      box-shadow: 0 0 0 5px #167c8233, 0 2px 6px #19313a59;
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+
+    .selection-marker.is-dragging { cursor: grabbing; }
+
+    .selection-marker.is-dragging .selection-marker-dot {
+      transform: scale(1.3);
+      box-shadow: 0 0 0 9px #167c8240, 0 8px 16px #19313a66;
+    }
+
+    .return-control {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 12px;
+      border: 2px solid #0003;
+      border-radius: 4px;
+      background: var(--white);
+      background-clip: padding-box;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .return-control:hover { background: #f4f7f6; }
+    .return-control[hidden] { display: none; }
+    .return-control svg { width: 15px; height: 15px; color: var(--sea); }
+
     .leaflet-container { font-family: "DM Sans", sans-serif; }
     .leaflet-control-attribution { font-size: 10px !important; }
 
@@ -427,14 +469,14 @@
 
   <main class="layout">
     <section class="map-panel" aria-label="Earthquake map">
-      <div id="map" role="application" aria-label="Map showing your location and nearby earthquakes"></div>
+      <div id="map" role="application" aria-label="Map showing the search location and nearby earthquakes. Drag the marker or tap the map to choose another location."></div>
       <div class="map-label"><span class="map-label-mark"></span>NEARBY ACTIVITY</div>
     </section>
 
     <aside class="sidebar">
       <div class="sidebar-head">
         <p class="eyebrow">LOCAL SEISMIC ACTIVITY</p>
-        <h1>Earthquakes<br>near you</h1>
+        <h1 id="results-heading">Earthquakes<br>near you</h1>
         <p class="subtitle">Recent events, ordered by distance.</p>
         <div class="controls">
           <div class="count-field">
@@ -497,7 +539,14 @@
   </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="/static/location-state.js"></script>
   <script>
+    const { createLocationState, createLatestLoader, normalizeCoordinates, debounce } = window.LocationState;
+    // Batches rapid selection changes (e.g. repeated taps) into one request.
+    const SELECTION_DEBOUNCE_MS = 250;
+    // Waits long enough to tell a single tap from a double-tap zoom.
+    const MAP_CLICK_DELAY_MS = 300;
+
     const map = L.map("map", { zoomControl: false }).setView([20, 0], 2);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18,
@@ -509,6 +558,7 @@
     const countSelect = document.getElementById("count");
     const status = document.getElementById("status");
     const statusText = document.getElementById("status-text");
+    const resultsHeading = document.getElementById("results-heading");
     const resultCount = document.getElementById("result-count");
     const results = document.getElementById("results");
     const startDateInput = document.getElementById("start-date");
@@ -520,9 +570,36 @@
     const distanceMaxValue = document.getElementById("distance-max-value");
     const distanceSummary = document.getElementById("distance-summary");
     const earthquakeLayer = L.layerGroup().addTo(map);
-    const userLayer = L.layerGroup().addTo(map);
-    let userPosition = null;
+    const locationState = createLocationState();
+    const nearbyLoader = createLatestLoader(fetchNearby);
+    const scheduleSelectionLoad = debounce(() => loadSelected({ fitMap: false }), SELECTION_DEBOUNCE_MS);
     let allLocations = [];
+    let fitMapToResults = true;
+    let selectionMarker = null;
+    let pendingMapClick = null;
+    let popupJustClosed = false;
+
+    const selectionIcon = L.divIcon({
+      className: "selection-marker",
+      html: '<span class="selection-marker-dot"></span>',
+      iconSize: [20, 20],
+      iconAnchor: [10, 10],
+      popupAnchor: [0, -10],
+    });
+
+    const ReturnControl = L.Control.extend({
+      options: { position: "bottomright" },
+      onAdd() {
+        const button = L.DomUtil.create("button", "return-control");
+        button.type = "button";
+        button.hidden = true;
+        button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="2" /><path d="M12 2v2m0 16v2M2 12h2m16 0h2" /></svg><span>Return to my location</span>';
+        L.DomEvent.disableClickPropagation(button);
+        L.DomEvent.on(button, "click", returnToCurrentLocation);
+        return button;
+      },
+    });
+    const returnControl = new ReturnControl().addTo(map);
 
     const today = new Date();
     const latestDate = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
@@ -551,11 +628,91 @@
       results.append(empty);
     }
 
+    function describeLocation({ latitude, longitude }) {
+      return `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`;
+    }
+
     function focusEarthquake(location) {
       map.flyTo([location.latitude, location.longitude], Math.max(map.getZoom(), 7), {
         duration: 0.55,
       });
       location.marker.openPopup();
+    }
+
+    function updateSelectionUi() {
+      const manual = locationState.isManualSelection;
+      returnControl.getContainer().hidden = !manual;
+      resultsHeading.replaceChildren(
+        manual ? "Earthquakes near" : "Earthquakes",
+        document.createElement("br"),
+        manual ? "selected point" : "near you",
+      );
+      if (selectionMarker) selectionMarker.setPopupContent(manual ? "Selected location" : "Your location");
+    }
+
+    function placeSelectionMarker(latitude, longitude) {
+      if (selectionMarker) {
+        selectionMarker.setLatLng([latitude, longitude]);
+        return;
+      }
+
+      selectionMarker = L.marker([latitude, longitude], {
+        icon: selectionIcon,
+        draggable: true,
+        autoPan: true,
+        zIndexOffset: 1000,
+        title: "Search location. Drag to move it.",
+        alt: "Search location",
+      }).addTo(map);
+      selectionMarker.bindPopup("Your location");
+      selectionMarker.on("dragstart", () => {
+        cancelPendingMapClick();
+        map.closePopup();
+        selectionMarker.getElement().classList.add("is-dragging");
+      });
+      selectionMarker.on("dragend", () => {
+        selectionMarker.getElement().classList.remove("is-dragging");
+        const { lat, lng } = selectionMarker.getLatLng();
+        selectManually(lat, lng);
+      });
+    }
+
+    function selectManually(latitude, longitude, markerLatLng = null) {
+      if (!normalizeCoordinates(latitude, longitude)) {
+        setStatus("That point is outside the valid map area. Choose another location.", "error");
+        const selected = locationState.selectedLocation;
+        if (selected) placeSelectionMarker(selected.latitude, selected.longitude);
+        return;
+      }
+
+      const changed = locationState.selectLocation(latitude, longitude);
+      // The marker stays where the user put it, even on a wrapped world copy.
+      if (markerLatLng) placeSelectionMarker(markerLatLng.lat, markerLatLng.lng);
+      updateSelectionUi();
+      if (changed) {
+        setStatus(`Updating distances for ${describeLocation(locationState.selectedLocation)}…`, "loading");
+        results.setAttribute("aria-busy", "true");
+        scheduleSelectionLoad();
+      }
+    }
+
+    function returnToCurrentLocation() {
+      const current = locationState.currentLocation;
+      if (!current) {
+        locateUser({ explicit: true });
+        return;
+      }
+
+      cancelPendingMapClick();
+      locationState.resetToCurrentLocation();
+      placeSelectionMarker(current.latitude, current.longitude);
+      updateSelectionUi();
+      loadSelected({ fitMap: true });
+    }
+
+    function cancelPendingMapClick() {
+      clearTimeout(pendingMapClick);
+      pendingMapClick = null;
     }
 
     function renderDistanceHistogram() {
@@ -597,6 +754,7 @@
     function renderFilteredEarthquakes() {
       const minimum = Number(distanceMin.value);
       const maximum = Number(distanceMax.value);
+      const selected = locationState.selectedLocation;
       const locations = allLocations.filter((location) =>
         location.distance_km >= minimum && location.distance_km <= maximum,
       );
@@ -613,8 +771,7 @@
       earthquakeLayer.clearLayers();
       results.replaceChildren();
 
-      const bounds = L.latLngBounds([[userPosition.latitude, userPosition.longitude]]);
-      userLayer.clearLayers();
+      const bounds = L.latLngBounds([[selected.latitude, selected.longitude]]);
       locations.forEach((location, index) => {
         if (!Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) return;
 
@@ -624,6 +781,8 @@
           weight: 2,
           fillColor: "#dc513d",
           fillOpacity: 0.92,
+          // Clicking an earthquake opens its popup instead of moving the search location.
+          bubblingMouseEvents: false,
         }).addTo(earthquakeLayer);
         location.marker = marker;
 
@@ -655,54 +814,77 @@
         results.append(row);
       });
 
-      const userMarker = L.circleMarker([userPosition.latitude, userPosition.longitude], {
-        radius: 8,
-        color: "#fff",
-        weight: 3,
-        fillColor: "#167c82",
-        fillOpacity: 1,
-      }).addTo(userLayer);
-      userMarker.bindPopup("Your location");
-      bounds.extend([userPosition.latitude, userPosition.longitude]);
-      if (locations.length > 0) {
-        map.fitBounds(bounds, { padding: [36, 36], maxZoom: 9 });
-      } else {
-        map.setView([userPosition.latitude, userPosition.longitude], 8);
+      // Manual selections keep the user's viewport so the map does not jump under their pointer.
+      if (fitMapToResults) {
+        if (locations.length > 0) {
+          map.fitBounds(bounds, { padding: [36, 36], maxZoom: 9 });
+        } else {
+          map.setView([selected.latitude, selected.longitude], 8);
+        }
       }
 
       resultCount.textContent = `${locations.length} of ${allLocations.length} shown`;
       if (locations.length === 0) showEmpty("No nearby earthquakes were found in the current feed.");
     }
 
-    async function loadNearby(latitude, longitude) {
-      locateButton.disabled = true;
-      setStatus("Loading nearby earthquakes…", "loading");
-      try {
-        const params = new URLSearchParams({
-          lat: latitude,
-          lon: longitude,
-          num_earthquakes: countSelect.value,
-          start_date: startDateInput.value,
-          end_date: endDateInput.value,
-        });
-        const response = await fetch(`/earthquakes/near-me?${params}`);
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Could not load earthquake data.");
-
-        renderEarthquakes(data.locations || []);
-        setStatus(`Showing the closest events to ${latitude.toFixed(2)}, ${longitude.toFixed(2)}.`, "success");
-      } catch (error) {
-        resultCount.textContent = "Unavailable";
-        showEmpty(error.message || "Could not load earthquake data.");
-        setStatus(error.message || "Could not load earthquake data.", "error");
-      } finally {
-        locateButton.disabled = false;
-      }
+    async function fetchNearby(location, signal) {
+      const params = new URLSearchParams({
+        lat: location.latitude,
+        lon: location.longitude,
+        num_earthquakes: countSelect.value,
+        start_date: startDateInput.value,
+        end_date: endDateInput.value,
+      });
+      const response = await fetch(`/earthquakes/near-me?${params}`, { signal });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not load earthquake data.");
+      return data;
     }
 
-    function locateUser() {
+    async function loadSelected({ fitMap }) {
+      const location = locationState.selectedLocation;
+      if (!location) return;
+
+      scheduleSelectionLoad.cancel();
+      fitMapToResults = fitMap;
+      locateButton.disabled = true;
+      results.setAttribute("aria-busy", "true");
+      setStatus(
+        locationState.isManualSelection
+          ? `Updating distances for ${describeLocation(location)}…`
+          : "Loading nearby earthquakes…",
+        "loading",
+      );
+
+      let outcome;
+      try {
+        outcome = await nearbyLoader.load(location);
+      } catch (error) {
+        const message = error.message || "Could not load earthquake data.";
+        resultCount.textContent = "Unavailable";
+        showEmpty(message);
+        setStatus(message, "error");
+        locateButton.disabled = false;
+        results.removeAttribute("aria-busy");
+        return;
+      }
+      // A newer selection superseded this request; its own load will render.
+      if (outcome.status === "stale") return;
+
+      renderEarthquakes(outcome.data.locations || []);
+      setStatus(
+        locationState.isManualSelection
+          ? `Showing the closest events to the selected point ${describeLocation(location)}.`
+          : `Showing the closest events to ${describeLocation(location)}. Drag the marker to explore elsewhere.`,
+        "success",
+      );
+      locateButton.disabled = false;
+      results.removeAttribute("aria-busy");
+    }
+
+    function locateUser({ explicit = false } = {}) {
       if (!navigator.geolocation) {
-        setStatus("Location is not available in this browser.", "error");
+        setStatus("Location is not available in this browser. Tap the map to choose a location.", "error");
         return;
       }
 
@@ -710,27 +892,61 @@
       setStatus("Finding your location…", "loading");
       navigator.geolocation.getCurrentPosition(
         ({ coords }) => {
-          userPosition = { latitude: coords.latitude, longitude: coords.longitude };
-          userLayer.clearLayers();
-          loadNearby(userPosition.latitude, userPosition.longitude);
+          if (!normalizeCoordinates(coords.latitude, coords.longitude)) {
+            locateButton.disabled = false;
+            setStatus("Could not determine your location. Try again.", "error");
+            return;
+          }
+
+          let selectionMoved = locationState.updateCurrentLocation(coords.latitude, coords.longitude);
+          if (explicit) selectionMoved = locationState.resetToCurrentLocation() || selectionMoved;
+          updateSelectionUi();
+          if (!explicit && !selectionMoved) {
+            // A point the user picked while GPS was resolving stays selected.
+            locateButton.disabled = false;
+            return;
+          }
+
+          const selected = locationState.selectedLocation;
+          placeSelectionMarker(selected.latitude, selected.longitude);
+          loadSelected({ fitMap: true });
         },
         (error) => {
           locateButton.disabled = false;
           const message = error.code === error.PERMISSION_DENIED
-            ? "Location permission was denied. Allow it in your browser settings to continue."
+            ? "Location permission was denied. Allow it in your browser settings, or tap the map to choose a location."
             : error.code === error.TIMEOUT
-              ? "Location lookup timed out. Try again."
-              : "Could not determine your location. Try again.";
+              ? "Location lookup timed out. Try again, or tap the map to choose a location."
+              : "Could not determine your location. Try again, or tap the map to choose a location.";
           setStatus(message, "error");
         },
         { enableHighAccuracy: false, timeout: 12000, maximumAge: 60000 },
       );
     }
 
-    locateButton.addEventListener("click", locateUser);
-    countSelect.addEventListener("change", () => {
-      if (userPosition) loadNearby(userPosition.latitude, userPosition.longitude);
+    function reloadSelected() {
+      if (locationState.selectedLocation) loadSelected({ fitMap: !locationState.isManualSelection });
+    }
+
+    // Tapping the map moves the search location. Panning and pinch-zooming never fire
+    // "click", and the delay lets a double-click zoom cancel the pending selection.
+    map.on("popupclose", () => {
+      popupJustClosed = true;
+      setTimeout(() => { popupJustClosed = false; }, 0);
     });
+    map.on("click", (event) => {
+      // A tap that only dismissed a popup should not move the marker.
+      if (popupJustClosed) return;
+      cancelPendingMapClick();
+      pendingMapClick = setTimeout(() => {
+        pendingMapClick = null;
+        selectManually(event.latlng.lat, event.latlng.lng, event.latlng);
+      }, MAP_CLICK_DELAY_MS);
+    });
+    map.on("dblclick zoomstart dragstart", cancelPendingMapClick);
+
+    locateButton.addEventListener("click", () => locateUser({ explicit: true }));
+    countSelect.addEventListener("change", reloadSelected);
     distanceMin.addEventListener("input", () => {
       if (Number(distanceMin.value) > Number(distanceMax.value)) {
         distanceMax.value = distanceMin.value;
@@ -754,7 +970,7 @@
       }
       startDateInput.max = endDateInput.value;
       endDateInput.min = startDateInput.value;
-      if (userPosition) loadNearby(userPosition.latitude, userPosition.longitude);
+      reloadSelected();
     }
 
     startDateInput.addEventListener("change", () => updateDateRange(startDateInput));
